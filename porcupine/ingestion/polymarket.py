@@ -1,24 +1,33 @@
 """
-Polymarket CLOB API ingestion wrapper.
+Polymarket ingestion — dual-source strategy.
 
-Uses py-clob-client in read-only mode (no wallet/API key required for public data).
-Returns normalized Market objects for use across the CLI and signal engine.
+fetch_markets() uses the Gamma REST API:
+  https://gamma-api.polymarket.com/markets
+  - Supports filtering by active/closed and sorting by volume
+  - Returns volume, liquidity, outcomePrices as part of the response
+  - No auth required
+
+fetch_market() uses the CLOB API for single market lookup:
+  https://clob.polymarket.com
+  - Authoritative for order book and price data
+  - Falls back to Gamma if CLOB lookup fails
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
-from datetime import datetime, timezone
 
-from py_clob_client.client import ClobClient
-from py_clob_client.clob_types import ApiCreds
+import httpx
 from dotenv import load_dotenv
 
 load_dotenv()
 
+GAMMA_HOST = "https://gamma-api.polymarket.com"
 CLOB_HOST = os.getenv("POLYMARKET_CLOB_HOST", "https://clob.polymarket.com")
+
+_HTTP_TIMEOUT = 20  # seconds
 
 
 @dataclass
@@ -29,7 +38,7 @@ class Market:
     volume: Optional[float]
     end_date: Optional[str]
     active: bool = True
-    raw: dict = None                # full API payload for debugging
+    raw: dict = field(default_factory=dict, repr=False)
 
     def delta(self, estimate: float) -> float:
         """Signal delta: LLM estimate minus market-implied probability."""
@@ -38,53 +47,78 @@ class Market:
         return estimate - self.implied_prob
 
 
-def _build_client() -> ClobClient:
-    """Build a read-only ClobClient (no credentials required for public endpoints)."""
-    return ClobClient(CLOB_HOST)
+# ---------------------------------------------------------------------------
+# Price extraction
+# ---------------------------------------------------------------------------
 
+def _parse_yes_price(outcome_prices: str, outcomes: str) -> Optional[float]:
+    """
+    Parse the YES-side price from Gamma API outcomePrices + outcomes fields.
 
-def _extract_yes_price(token_data: list[dict]) -> Optional[float]:
+    Both fields are JSON-encoded strings like:
+      outcomes:      '["Yes", "No"]'  or  '["Liverpool FC", "Draw", "PSG"]'
+      outcomePrices: '["0.345", "0.655"]'
+
+    For explicit Yes/No markets: return the Yes price.
+    For binary non-Yes/No markets: return the first outcome price (primary side).
+    Multi-outcome markets (3+): return the first outcome price.
     """
-    Pull the YES token price from token metadata.
-    Polymarket returns two tokens per market: YES and NO.
-    The YES price is the market-implied probability.
-    """
-    if not token_data:
-        return None
-    for token in token_data:
-        outcome = (token.get("outcome") or "").upper()
-        if outcome == "YES":
-            price = token.get("price")
-            if price is not None:
-                try:
-                    return float(price)
-                except (TypeError, ValueError):
-                    return None
-    # Fallback: first token price if outcome labels aren't standard
+    import json as _json
     try:
-        return float(token_data[0].get("price") or 0)
+        prices = _json.loads(outcome_prices)
+        labels = _json.loads(outcomes)
+    except (TypeError, ValueError):
+        return None
+
+    if not prices:
+        return None
+
+    # Try to find explicit "Yes" label
+    for label, price in zip(labels, prices):
+        if str(label).strip().lower() == "yes":
+            try:
+                p = float(price)
+                return p if 0.0 <= p <= 1.0 else None
+            except (TypeError, ValueError):
+                return None
+
+    # Fallback: first price as the primary outcome probability
+    try:
+        p = float(prices[0])
+        return p if 0.0 <= p <= 1.0 else None
     except (TypeError, ValueError):
         return None
 
 
-def _normalize(raw: dict) -> Market:
-    """Convert a raw Polymarket market dict into a normalized Market object."""
-    condition_id = raw.get("condition_id") or raw.get("id") or ""
-    question = raw.get("question") or raw.get("description") or "(no question)"
-    tokens = raw.get("tokens") or []
-    implied_prob = _extract_yes_price(tokens)
+def _normalize_gamma(raw: dict) -> Market:
+    """Convert a Gamma API market dict into a normalized Market object."""
+    condition_id = raw.get("conditionId") or raw.get("condition_id") or ""
+    question = raw.get("question") or "(no question)"
 
-    # Volume: sum of all token volumes or top-level volume
-    volume = raw.get("volume")
-    if volume is None:
-        volume = raw.get("volume_num")
-    try:
-        volume = float(volume) if volume is not None else None
-    except (TypeError, ValueError):
-        volume = None
+    implied_prob = _parse_yes_price(
+        raw.get("outcomePrices", "[]"),
+        raw.get("outcomes", "[]"),
+    )
+    # Also try lastTradePrice as a tiebreaker
+    if implied_prob is None:
+        ltp = raw.get("lastTradePrice")
+        try:
+            implied_prob = float(ltp) if ltp is not None else None
+        except (TypeError, ValueError):
+            implied_prob = None
 
-    end_date = raw.get("end_date_iso") or raw.get("end_date") or raw.get("game_start_time")
-    active = raw.get("active", True)
+    volume = None
+    for key in ("volumeNum", "volume24hr", "volume"):
+        v = raw.get(key)
+        if v is not None:
+            try:
+                volume = float(v)
+                break
+            except (TypeError, ValueError):
+                continue
+
+    end_date = raw.get("endDateIso") or raw.get("endDate") or raw.get("end_date_iso")
+    active = bool(raw.get("active", False)) and not bool(raw.get("closed", True))
 
     return Market(
         condition_id=condition_id,
@@ -92,75 +126,146 @@ def _normalize(raw: dict) -> Market:
         implied_prob=implied_prob,
         volume=volume,
         end_date=end_date,
-        active=bool(active),
+        active=active,
         raw=raw,
     )
 
 
-def fetch_markets(limit: int = 50, only_active: bool = True) -> list[Market]:
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def fetch_markets(limit: int = 20, only_active: bool = True) -> list[Market]:
     """
-    Fetch the top N active markets from Polymarket, sorted by volume descending.
+    Fetch the top N active markets from Polymarket (Gamma API), sorted by
+    24-hour volume descending.
 
     Args:
-        limit: Max number of markets to return after filtering.
-        only_active: If True, skip resolved/closed markets.
+        limit:       Max number of markets to return.
+        only_active: If True, request only active/non-closed markets.
 
     Returns:
-        List of normalized Market objects.
+        List of normalized Market objects, sorted by volume descending.
     """
-    client = _build_client()
+    params: dict = {
+        "limit": min(limit * 2, 100),  # over-fetch slightly for filtering
+        "order": "volume24hr",
+        "ascending": "false",
+    }
+    if only_active:
+        params["active"] = "true"
+        params["closed"] = "false"
+
+    try:
+        resp = httpx.get(
+            f"{GAMMA_HOST}/markets",
+            params=params,
+            timeout=_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+        raw_list = resp.json()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(f"Gamma API error {exc.response.status_code}: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError(f"Polymarket fetch failed: {exc}") from exc
 
     markets: list[Market] = []
-    next_cursor = ""
-
-    # Page through results until we have enough or exhaust the feed
-    while len(markets) < limit * 3:  # over-fetch to account for filtering
-        try:
-            if next_cursor:
-                resp = client.get_markets(next_cursor=next_cursor)
-            else:
-                resp = client.get_markets()
-        except Exception as exc:
-            raise RuntimeError(f"Polymarket API error: {exc}") from exc
-
-        raw_list = resp.get("data") or []
-        for raw in raw_list:
-            m = _normalize(raw)
-            if only_active and not m.active:
-                continue
-            if m.implied_prob is None:
-                continue  # skip markets with no price data
+    for raw in raw_list:
+        m = _normalize_gamma(raw)
+        if only_active and not m.active:
+            continue
+        if m.condition_id and m.implied_prob is not None:
             markets.append(m)
+        if len(markets) >= limit:
+            break
 
-        next_cursor = resp.get("next_cursor") or ""
-        if not next_cursor or next_cursor == "LTE=":
-            break  # LTE= is Polymarket's sentinel for "no more pages"
-
-    # Sort by volume descending, put None volumes at the end
-    markets.sort(key=lambda m: m.volume or 0, reverse=True)
-    return markets[:limit]
+    return markets
 
 
 def fetch_market(condition_id: str) -> Market:
     """
     Fetch a single market by condition_id.
 
+    Tries Gamma API first (has volume data); falls back to CLOB if not found.
+
     Args:
-        condition_id: Polymarket condition ID (hex string).
+        condition_id: Polymarket conditionId (hex string).
 
     Returns:
         Normalized Market object.
 
     Raises:
-        ValueError: If the market is not found.
+        ValueError: If the market is not found in either source.
     """
-    client = _build_client()
+    # Try Gamma first — filter client-side since conditionId is not a server filter
     try:
-        raw = client.get_market(condition_id)
+        resp = httpx.get(
+            f"{GAMMA_HOST}/markets",
+            params={"conditionId": condition_id},
+            timeout=_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            for item in data:
+                if (item.get("conditionId") or "").lower() == condition_id.lower():
+                    return _normalize_gamma(item)
+        if isinstance(data, dict):
+            if (data.get("conditionId") or "").lower() == condition_id.lower():
+                return _normalize_gamma(data)
+    except Exception:
+        pass
+
+    # Fallback: CLOB API
+    try:
+        resp = httpx.get(
+            f"{CLOB_HOST}/markets/{condition_id}",
+            timeout=_HTTP_TIMEOUT,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+        if raw:
+            return _normalize_clob(raw)
     except Exception as exc:
-        raise RuntimeError(f"Polymarket API error fetching {condition_id}: {exc}") from exc
+        raise ValueError(
+            f"Market not found in Gamma or CLOB API: {condition_id}"
+        ) from exc
 
-    if not raw:
-        raise ValueError(f"Market not found: {condition_id}")
+    raise ValueError(f"Market not found: {condition_id}")
 
-    return _normalize(raw)
+
+def _normalize_clob(raw: dict) -> Market:
+    """Normalize a CLOB API market response (fallback path)."""
+    condition_id = raw.get("condition_id") or ""
+    question = raw.get("question") or "(no question)"
+
+    # Extract price from tokens
+    tokens = raw.get("tokens") or []
+    implied_prob = None
+    for token in tokens:
+        outcome = str(token.get("outcome") or "").strip().lower()
+        if outcome == "yes":
+            try:
+                p = float(token["price"])
+                implied_prob = p if 0.0 <= p <= 1.0 else None
+            except (KeyError, TypeError, ValueError):
+                pass
+            break
+    if implied_prob is None and tokens:
+        try:
+            implied_prob = float(tokens[0].get("price") or 0) or None
+        except (TypeError, ValueError):
+            pass
+
+    end_date = raw.get("end_date_iso") or raw.get("end_date")
+    active = not raw.get("closed", True) and bool(raw.get("accepting_orders", False))
+
+    return Market(
+        condition_id=condition_id,
+        question=question,
+        implied_prob=implied_prob,
+        volume=None,
+        end_date=end_date,
+        active=active,
+        raw=raw,
+    )

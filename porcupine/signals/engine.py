@@ -206,6 +206,18 @@ def _query_model(model_cfg: dict, market: Market) -> ModelSignal:
         text, latency_ms = _call_model(model_cfg, messages)
         total_latency += latency_ms
     except Exception as exc:
+        # Summarize the error to a single readable line
+        err_str = str(exc)
+        if "AuthenticationError" in type(exc).__name__ or "authentication" in err_str.lower():
+            short_err = "API key missing or invalid"
+        elif "ConnectionError" in type(exc).__name__ or "refused" in err_str.lower() or "connect" in err_str.lower():
+            short_err = "Connection refused — is the service running?"
+        elif "RateLimitError" in type(exc).__name__:
+            short_err = "Rate limit hit"
+        elif "Timeout" in type(exc).__name__:
+            short_err = "Timed out"
+        else:
+            short_err = err_str[:80]
         return ModelSignal(
             model_name=model_cfg["name"],
             model_label=model_cfg["label"],
@@ -213,7 +225,7 @@ def _query_model(model_cfg: dict, market: Market) -> ModelSignal:
             rationale=None,
             confidence=None,
             latency_ms=0,
-            error=f"API error: {exc}",
+            error=short_err,
         )
 
     # Try to parse JSON from the response

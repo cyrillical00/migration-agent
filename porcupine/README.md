@@ -7,8 +7,14 @@ Private prediction market signal engine. Fetches live Polymarket markets, querie
 ## Quick Start
 
 ```bash
-# 1. Install dependencies (run as cyril admin if system-wide Python install needed)
-pip install -r requirements.txt
+# 1. Install dependencies
+# supabase pulls pyiceberg which needs C++ build tools — install its sub-packages
+# individually to avoid that. Run these commands in order:
+pip install litellm[all] anthropic tiktoken tokenizers
+pip install py-clob-client
+pip install "storage3==0.8.1"   # newer storage3 requires pyiceberg (needs C++ build tools)
+pip install supabase-auth supabase-functions postgrest gotrue realtime supafunc supabase
+pip install typer[all] rich keyring python-dotenv tenacity httpx
 
 # 2. Copy and fill in secrets
 cp .env.example .env
