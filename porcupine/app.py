@@ -359,14 +359,24 @@ elif page == "Compare":
         summary.append({
             "#":        rank,
             "Question": m.question[:65],
-            "Market":   _pct(m.implied_prob),
-            "Ensemble": _pct(r["mean"]),
-            "Delta":    f"{'+' if (d or 0) >= 0 else ''}{(d or 0)*100:.1f}%",
+            "Market %":   round((m.implied_prob or 0) * 100, 1),
+            "Ensemble %": round((r["mean"] or 0) * 100, 1) if r["mean"] is not None else None,
+            "Delta %":    round((d or 0) * 100, 1),
             "Models":   f"{sum(1 for s in r['signals'] if s.ok)}/{len(r['signals'])}",
-            "Volume":   f"${m.volume:,.0f}" if m.volume else "—",
+            "Volume":   m.volume or 0,
         })
 
-    st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
+    st.dataframe(
+        pd.DataFrame(summary),
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Market %":   st.column_config.NumberColumn(format="%.1f%%"),
+            "Ensemble %": st.column_config.NumberColumn(format="%.1f%%"),
+            "Delta %":    st.column_config.NumberColumn(format="%+.1f%%"),
+            "Volume":     st.column_config.NumberColumn(format="$%,.0f"),
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
