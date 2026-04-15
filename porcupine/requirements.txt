@@ -1,24 +1,29 @@
-# Core CLI + display
+# Core UI
+streamlit>=1.35
+pandas>=2.0
+
+# CLI + display
 typer[all]>=0.12
 rich>=13.7
 
 # LLM routing
 litellm>=1.44
-anthropic>=0.40        # needed by litellm for Claude calls
-tiktoken>=0.12         # needed by litellm for token counting
-tokenizers>=0.22       # needed by litellm
-fastuuid>=0.14         # needed by litellm
+anthropic>=0.40
+tiktoken>=0.12
+tokenizers>=0.22
+fastuuid>=0.14
 
 # Market data
 py-clob-client>=0.20
-httpx>=0.27,<0.29      # pinned range — supabase + litellm both need this
+httpx>=0.27,<0.29
 
-# Database — install individually; supabase[async] pulls pyiceberg which needs C++ build tools
-# Run: pip install supabase-auth supabase-functions storage3==0.8.1 postgrest gotrue realtime supafunc supabase
+# Database — install individually on Windows (supabase[async] pulls pyiceberg which needs C++ build tools)
+# pip install supabase-auth supabase-functions storage3==0.8.1 postgrest gotrue realtime supafunc supabase
 supabase>=2.7
 
-# Auth
+# Auth + MFA
 keyring>=25
+qrcode[pil]>=7.4
 
 # Utilities
 python-dotenv>=1.0
