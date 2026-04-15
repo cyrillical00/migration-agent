@@ -138,7 +138,7 @@ def _save_run(market_id: str, signals: list) -> None:
 # ---------------------------------------------------------------------------
 
 with st.sidebar:
-    st.title("🦔 Porcupine")
+    st.image("images/porcupine.png", use_container_width=True)
     st.caption("Prediction market signal engine")
     st.divider()
 

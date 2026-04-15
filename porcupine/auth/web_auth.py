@@ -91,7 +91,8 @@ def render_auth_gate() -> bool:
 
     _, col, _ = st.columns([1, 2, 1])
     with col:
-        st.markdown("## 🦔 Porcupine")
+        st.image("images/porcupine.png", width=120)
+        st.markdown("## Porcupine")
         st.caption("Prediction market signal engine — invite only")
         st.divider()
 
