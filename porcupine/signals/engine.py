@@ -45,8 +45,8 @@ MODELS = [
     },
     {
         "name": "ollama",
-        "label": "Ollama (qwen2.5-coder:32b)",
-        "model_id": "ollama/qwen2.5-coder:32b",
+        "label": "Ollama (llama3.2)",
+        "model_id": "ollama/llama3.2",
         "max_tokens": 1024,
         "kwargs": {
             "api_base": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
