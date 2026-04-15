@@ -31,7 +31,7 @@ import pandas as pd
 
 from ingestion.polymarket import fetch_markets, fetch_market, Market
 from signals.engine import MODELS, EnsembleResult, _query_model
-from auth.web_auth import render_auth_gate, get_session, logout
+from auth.web_auth import render_auth_gate, get_session, logout, render_account_page
 
 # ---------------------------------------------------------------------------
 # Page config — must be first Streamlit call
@@ -144,7 +144,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navigate",
-        ["Markets", "Signal", "Compare"],
+        ["Markets", "Signal", "Compare", "Account"],
         label_visibility="collapsed",
     )
 
@@ -367,6 +367,14 @@ elif page == "Compare":
         })
 
     st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
+
+
+# ---------------------------------------------------------------------------
+# Page: Account
+# ---------------------------------------------------------------------------
+
+elif page == "Account":
+    render_account_page()
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,7 @@ Supports:
   - Email + password login
   - TOTP MFA (verify if enrolled; enroll on first login)
   - Session stored in st.session_state (survives reruns, cleared on logout)
+  - Account page: change password, change email, manage MFA
 
 Auth state machine:
   None / "login"   →  email + password form
@@ -296,4 +297,180 @@ def _enroll_step() -> None:
     st.session_state.pop("_enroll_data", None)
     st.session_state.pop("auth_state", None)
     st.success("MFA enabled. You're all set.")
+    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# Account page (authenticated)
+# ---------------------------------------------------------------------------
+
+def render_account_page() -> None:
+    """Render the account settings page for an authenticated user."""
+    st.header("Account settings")
+
+    session = get_session()
+    if not session:
+        st.error("Not signed in.")
+        return
+
+    st.caption(f"Signed in as **{session.get('email', '')}**")
+    st.divider()
+
+    _change_password_section()
+    st.divider()
+    _change_email_section(session)
+    st.divider()
+    _mfa_management_section()
+
+
+def _change_password_section() -> None:
+    st.subheader("Change password")
+
+    with st.form("change_password_form"):
+        new_pw  = st.text_input("New password", type="password", placeholder="Min 8 characters")
+        conf_pw = st.text_input("Confirm new password", type="password")
+        submit  = st.form_submit_button("Update password", type="primary", use_container_width=True)
+
+    if not submit:
+        return
+
+    if not new_pw:
+        st.error("Password cannot be empty.")
+        return
+    if len(new_pw) < 8:
+        st.error("Password must be at least 8 characters.")
+        return
+    if new_pw != conf_pw:
+        st.error("Passwords do not match.")
+        return
+
+    with st.spinner("Updating…"):
+        try:
+            _client().auth.update_user({"password": new_pw})
+        except Exception as exc:
+            st.error(f"Could not update password: {exc}")
+            return
+
+    st.success("Password updated.")
+
+
+def _change_email_section(session: dict) -> None:
+    st.subheader("Change email")
+    st.caption("A confirmation link will be sent to the new address before it takes effect.")
+
+    with st.form("change_email_form"):
+        new_email = st.text_input("New email", placeholder=session.get("email", ""))
+        submit    = st.form_submit_button("Send confirmation", type="primary", use_container_width=True)
+
+    if not submit:
+        return
+
+    if not new_email or "@" not in new_email:
+        st.error("Enter a valid email address.")
+        return
+
+    with st.spinner("Sending…"):
+        try:
+            _client().auth.update_user({"email": new_email})
+        except Exception as exc:
+            st.error(f"Could not update email: {exc}")
+            return
+
+    st.success(f"Confirmation sent to {new_email}. Check your inbox.")
+
+
+def _mfa_management_section() -> None:
+    st.subheader("Two-factor authentication")
+
+    # Check current MFA status
+    try:
+        factors   = _client().auth.mfa.list_factors()
+        totp_list = getattr(factors, "totp", []) or []
+    except Exception:
+        totp_list = []
+
+    enrolled = bool(totp_list)
+
+    if enrolled:
+        factor = totp_list[0]
+        st.success(f"MFA is enabled  ·  factor `{factor.id[:8]}…`")
+        st.caption("To disable MFA, unenroll the factor below.")
+
+        if st.button("Disable MFA", type="secondary"):
+            try:
+                _client().auth.mfa.unenroll({"factor_id": factor.id})
+                st.success("MFA disabled.")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Could not disable MFA: {exc}")
+    else:
+        st.info("MFA is not enabled on your account.")
+
+        if st.button("Set up MFA", type="primary"):
+            st.session_state["_account_enroll"] = True
+            st.rerun()
+
+    # Inline enroll flow (triggered by button above)
+    if not st.session_state.get("_account_enroll"):
+        return
+
+    enroll = st.session_state.get("_account_enroll_data")
+    if not enroll:
+        try:
+            resp   = _client().auth.mfa.enroll({"factor_type": "totp", "friendly_name": "Porcupine"})
+            enroll = {"factor_id": resp.id, "uri": resp.totp.uri, "secret": resp.totp.secret}
+            st.session_state["_account_enroll_data"] = enroll
+        except Exception as exc:
+            st.error(f"Could not start MFA setup: {exc}")
+            st.session_state.pop("_account_enroll", None)
+            return
+
+    try:
+        import io, qrcode
+        qr  = qrcode.make(enroll["uri"])
+        buf = io.BytesIO()
+        qr.save(buf, format="PNG")
+        st.image(buf.getvalue(), width=200)
+    except Exception:
+        st.code(enroll["uri"])
+
+    st.caption(f"Manual entry secret: `{enroll.get('secret', '')}`")
+
+    with st.form("account_enroll_form"):
+        code    = st.text_input("Enter code to confirm", placeholder="000000", max_chars=6)
+        confirm = st.form_submit_button("Enable MFA", use_container_width=True, type="primary")
+        cancel  = st.form_submit_button("Cancel")
+
+    if cancel:
+        try:
+            _client().auth.mfa.unenroll({"factor_id": enroll["factor_id"]})
+        except Exception:
+            pass
+        st.session_state.pop("_account_enroll", None)
+        st.session_state.pop("_account_enroll_data", None)
+        st.rerun()
+
+    if not confirm:
+        return
+
+    if not code.isdigit() or len(code) != 6:
+        st.error("Enter the 6-digit code from your authenticator app.")
+        return
+
+    with st.spinner("Verifying…"):
+        try:
+            factor_id = enroll["factor_id"]
+            challenge = _client().auth.mfa.challenge({"factor_id": factor_id})
+            _client().auth.mfa.verify({
+                "factor_id":    factor_id,
+                "challenge_id": challenge.id,
+                "code":         code,
+            })
+        except Exception as exc:
+            st.error(f"Could not verify code: {exc}")
+            return
+
+    st.session_state.pop("_account_enroll", None)
+    st.session_state.pop("_account_enroll_data", None)
+    st.success("MFA enabled.")
     st.rerun()
