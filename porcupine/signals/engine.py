@@ -33,18 +33,21 @@ MODELS = [
         "name": "claude",
         "label": "Claude Sonnet",
         "model_id": "claude-sonnet-4-20250514",
+        "max_tokens": 1024,
         "kwargs": {},
     },
     {
         "name": "gemini",
-        "label": "Gemini Flash",
-        "model_id": "gemini/gemini-2.0-flash",
+        "label": "Gemini 2.5 Flash",
+        "model_id": "gemini/gemini-2.5-flash",
+        "max_tokens": 4096,  # 2.5 Flash thinks longer before outputting JSON
         "kwargs": {},
     },
     {
         "name": "ollama",
         "label": "Ollama (qwen2.5-coder:32b)",
         "model_id": "ollama/qwen2.5-coder:32b",
+        "max_tokens": 1024,
         "kwargs": {
             "api_base": os.getenv("OLLAMA_HOST", "http://localhost:11434"),
         },
@@ -174,7 +177,7 @@ def _call_model(model_cfg: dict, messages: list[dict]) -> tuple[str, int]:
         model=model_cfg["model_id"],
         messages=messages,
         temperature=0.2,
-        max_tokens=1024,
+        max_tokens=model_cfg.get("max_tokens", 1024),
         **model_cfg.get("kwargs", {}),
     )
     elapsed_ms = int((time.monotonic() - start) * 1000)
