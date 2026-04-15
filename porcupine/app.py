@@ -28,6 +28,7 @@ load_dotenv()
 
 import streamlit as st
 import pandas as pd
+from PIL import Image
 
 from ingestion.polymarket import fetch_markets, fetch_market, Market
 from signals.engine import MODELS, EnsembleResult, _query_model
@@ -37,9 +38,11 @@ from auth.web_auth import render_auth_gate, get_session, logout, render_account_
 # Page config — must be first Streamlit call
 # ---------------------------------------------------------------------------
 
+_logo = Image.open("images/porcupine.png")
+
 st.set_page_config(
     page_title="Porcupine",
-    page_icon="🦔",
+    page_icon=_logo,
     layout="wide",
     initial_sidebar_state="expanded",
 )

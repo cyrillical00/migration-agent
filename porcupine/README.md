@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/porcupine.png" width="160" alt="Porcupine logo" />
+</p>
+
 # Porcupine
 
 Private prediction market signal engine. Fetches live Polymarket markets, queries three LLM models for independent probability estimates, and surfaces a delta signal via CLI. Invite-only, stored in Supabase, auth via magic link.
