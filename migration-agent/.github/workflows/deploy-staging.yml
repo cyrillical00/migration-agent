@@ -1,0 +1,43 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [main]
+
+# Staging deploy is scaffolded but not wired to real GCP/Vercel yet.
+# See QUESTIONS.md for the blocking questions (GCP project ID, Vercel team).
+
+jobs:
+  deploy-agent:
+    name: Agent -> Cloud Run (staging)
+    runs-on: ubuntu-latest
+    if: false  # Disabled until staging GCP project is confirmed (QUESTIONS.md)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+      - name: Build and push container
+        run: |
+          gcloud builds submit ./agent \
+            --tag gcr.io/${{ secrets.GCP_PROJECT }}/migration-agent:$GITHUB_SHA
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy migration-agent \
+            --image gcr.io/${{ secrets.GCP_PROJECT }}/migration-agent:$GITHUB_SHA \
+            --region us-central1 \
+            --project ${{ secrets.GCP_PROJECT }}
+
+  deploy-dashboard:
+    name: Dashboard -> Vercel (preview)
+    runs-on: ubuntu-latest
+    if: false  # Disabled until Vercel project is confirmed (QUESTIONS.md)
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy to Vercel
+        run: npx vercel deploy --token=${{ secrets.VERCEL_TOKEN }}
