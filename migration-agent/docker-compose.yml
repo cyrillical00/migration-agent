@@ -1,5 +1,8 @@
 version: "3.9"
 
+# Local development stack. Every published port is bound to 127.0.0.1 so the
+# database (with its default postgres/postgres login), the agent and the API
+# stubs are reachable from this machine only, not from the network it is on.
 services:
   postgres:
     image: postgres:15-alpine
@@ -8,7 +11,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,7 +29,7 @@ services:
       MIGRATION_AGENT_DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/migration_agent
       MIGRATION_AGENT_ENV: dev
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -41,7 +44,7 @@ services:
     environment:
       NEXT_PUBLIC_AGENT_URL: http://localhost:8000
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     volumes:
       - ./dashboard:/app
       - dashboard_node_modules:/app/node_modules
@@ -51,19 +54,19 @@ services:
       context: ./scripts/stubs
       dockerfile: Dockerfile.graph
     ports:
-      - "8001:8001"
+      - "127.0.0.1:8001:8001"
 
   google-stub:
     build:
       context: ./scripts/stubs
       dockerfile: Dockerfile.google
     ports:
-      - "8002:8002"
+      - "127.0.0.1:8002:8002"
 
   fake-gcs:
     image: fsouza/fake-gcs-server:latest
     ports:
-      - "4443:4443"
+      - "127.0.0.1:4443:4443"
     command: ["-scheme", "http", "-port", "4443"]
 
 volumes:
