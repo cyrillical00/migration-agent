@@ -1,3 +1,5 @@
+# NOT RUN BY GITHUB. Workflows are only picked up from .github/workflows at the
+# repository root; this file sits one directory down, so nothing here executes.
 name: Deploy to Staging
 
 on:
@@ -7,28 +9,39 @@ on:
 # Staging deploy is scaffolded but not wired to real GCP/Vercel yet.
 # See QUESTIONS.md for the blocking questions (GCP project ID, Vercel team).
 
+# Default for every job; a job that needs more says so itself.
+permissions:
+  contents: read
+
 jobs:
   deploy-agent:
     name: Agent -> Cloud Run (staging)
     runs-on: ubuntu-latest
     if: false  # Disabled until staging GCP project is confirmed (QUESTIONS.md)
+    permissions:
+      contents: read
+      id-token: write  # workload identity federation
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed  # v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
       - name: Build and push container
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
         run: |
           gcloud builds submit ./agent \
-            --tag gcr.io/${{ secrets.GCP_PROJECT }}/migration-agent:$GITHUB_SHA
+            --tag "gcr.io/${GCP_PROJECT}/migration-agent:${GITHUB_SHA}"
       - name: Deploy to Cloud Run
+        env:
+          GCP_PROJECT: ${{ secrets.GCP_PROJECT }}
         run: |
           gcloud run deploy migration-agent \
-            --image gcr.io/${{ secrets.GCP_PROJECT }}/migration-agent:$GITHUB_SHA \
+            --image "gcr.io/${GCP_PROJECT}/migration-agent:${GITHUB_SHA}" \
             --region us-central1 \
-            --project ${{ secrets.GCP_PROJECT }}
+            --project "${GCP_PROJECT}"
 
   deploy-dashboard:
     name: Dashboard -> Vercel (preview)
@@ -38,6 +51,8 @@ jobs:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Deploy to Vercel
-        run: npx vercel deploy --token=${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: npx vercel deploy --token="$VERCEL_TOKEN"
