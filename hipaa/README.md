@@ -52,7 +52,7 @@ streamlit run app.py
 
 | Connector | HIPAA Signals |
 |-----------|--------------|
-| **Okta** | MFA enforcement, unique user IDs, session timeout, password policy |
+| **Okta** | MFA requirement and session idle timeout (read from the sign-on policy rules), password length and lockout settings, active user count. Signals the API cannot show, such as shared accounts and log retention, are reported as not measured |
 | **AWS** | S3 encryption, CloudTrail, KMS, log retention |
 | **Google Workspace** | Email TLS, DLP, audit log retention, BAA status |
 | **Jamf / Kandji** | FileVault %, screen lock, MDM enrollment % |

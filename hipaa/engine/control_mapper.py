@@ -24,18 +24,20 @@ def map_connector_findings(findings: dict[str, dict], controls: list[dict]) -> d
     # Okta signals
     okta = findings.get("okta", {})
     if okta:
-        mfa = okta.get("mfa_enforced", False)
-        unique_ids = okta.get("unique_user_ids", True)
-        auto_logoff = okta.get("auto_logoff_minutes", None)
-        pwd_policy = okta.get("password_policy_strong", False)
+        # None means the connector did not measure the signal. Such a control
+        # is left unassessed instead of being recorded as a pass or a fail.
+        mfa = okta.get("mfa_enforced")
+        unique_ids = okta.get("unique_user_ids")
+        auto_logoff = okta.get("auto_logoff_minutes")
+        pwd_policy = okta.get("password_policy_strong")
 
-        if "TEC-007" not in assessment:
+        if "TEC-007" not in assessment and mfa is not None:
             assessment["TEC-007"] = {
                 "status": "Implemented" if mfa else "Not Implemented",
                 "evidence": mfa,
                 "notes": "MFA enforced via Okta" if mfa else "MFA not enforced in Okta",
             }
-        if "TEC-001" not in assessment:
+        if "TEC-001" not in assessment and unique_ids is not None:
             assessment["TEC-001"] = {
                 "status": "Implemented" if unique_ids else "Partial",
                 "evidence": unique_ids,
@@ -48,7 +50,7 @@ def map_connector_findings(findings: dict[str, dict], controls: list[dict]) -> d
                 "evidence": ok,
                 "notes": f"Auto-logoff configured at {auto_logoff} minutes",
             }
-        if "ADM-014" not in assessment:
+        if "ADM-014" not in assessment and pwd_policy is not None:
             assessment["ADM-014"] = {
                 "status": "Implemented" if pwd_policy else "Partial",
                 "evidence": pwd_policy,

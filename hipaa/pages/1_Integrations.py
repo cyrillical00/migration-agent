@@ -110,6 +110,11 @@ else:
                         st.session_state.connector_findings["okta"] = findings
                         st.success("Connected! Okta signals loaded.")
                         st.json(findings)
+                        if findings.get("not_measured"):
+                            st.caption(
+                                "null means the connector could not measure that signal. "
+                                "Those controls stay unassessed until you set them by hand."
+                            )
                     else:
                         st.error("Connection failed. Check domain and API token.")
             else:
