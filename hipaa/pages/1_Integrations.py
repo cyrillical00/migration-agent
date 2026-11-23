@@ -97,8 +97,15 @@ else:
         if st.button("Test & Connect Okta", key="okta_connect"):
             if okta_domain and okta_token:
                 with st.spinner("Connecting to Okta..."):
-                    conn = OktaConnector(okta_token, okta_domain)
-                    if conn.test_connection():
+                    try:
+                        conn = OktaConnector(okta_token, okta_domain)
+                    except ValueError as exc:
+                        # Not an Okta host: nothing was sent.
+                        conn = None
+                        st.error(str(exc))
+                    if conn is None:
+                        pass
+                    elif conn.test_connection():
                         findings = conn.to_hipaa_signals()
                         st.session_state.connector_findings["okta"] = findings
                         st.success("Connected! Okta signals loaded.")
