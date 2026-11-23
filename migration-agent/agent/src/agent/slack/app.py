@@ -5,14 +5,15 @@ from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
 from slack_bolt.async_app import AsyncApp
 
 from agent.config import get_settings
+from agent.slack_credentials import bot_token, signing_secret
 
 log = structlog.get_logger(__name__)
 
 _settings = get_settings()
 
 app = AsyncApp(
-    token=_settings.slack_bot_token or "xoxb-dev-placeholder",
-    signing_secret=_settings.slack_signing_secret or "dev-placeholder",
+    token=bot_token(_settings),
+    signing_secret=signing_secret(_settings),
 )
 handler = AsyncSlackRequestHandler(app)
 
