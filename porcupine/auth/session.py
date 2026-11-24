@@ -16,7 +16,10 @@ The service name used is "porcupine" and the username is the user's email.
 
 from __future__ import annotations
 
+import hmac
+import json
 import os
+import secrets
 import threading
 import urllib.parse
 import webbrowser
@@ -39,6 +42,14 @@ KEYRING_EMAIL_KEY = "email"
 
 CALLBACK_PORT = 54321
 CALLBACK_PATH = "/callback"
+TOKEN_PATH = "/token"
+
+# The only pages allowed to hand a token to the callback server are its own.
+_OWN_ORIGINS = {
+    f"http://localhost:{CALLBACK_PORT}",
+    f"http://127.0.0.1:{CALLBACK_PORT}",
+}
+_MAX_TOKEN_BODY = 16 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -94,20 +105,7 @@ def require_session() -> dict:
 # Magic link auth flow
 # ---------------------------------------------------------------------------
 
-class _CallbackHandler(BaseHTTPRequestHandler):
-    """
-    Minimal HTTP handler to capture the Supabase magic link redirect.
-
-    Supabase appends the token as a URL fragment (#access_token=...) which
-    browsers don't send to the server. We serve a tiny HTML page that reads
-    the fragment via JavaScript and POSTs it back to us.
-    """
-
-    captured: dict = {}
-
-    def do_GET(self):
-        """Serve the fragment-capture page."""
-        html = """<!DOCTYPE html>
+_CALLBACK_PAGE = """<!DOCTYPE html>
 <html><head><title>Porcupine Auth</title></head>
 <body>
 <script>
@@ -115,32 +113,105 @@ class _CallbackHandler(BaseHTTPRequestHandler):
   const params = new URLSearchParams(hash);
   const token = params.get('access_token');
   const type  = params.get('type');
-  fetch('/token', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({access_token: token, type: type})
-  }).then(() => {
-    document.body.innerHTML = '<h2>Login successful. You can close this tab.</h2>';
-  });
+  if (!token) {
+    document.body.innerHTML = '<p>Waiting for the magic link. Click the link in your email.</p>';
+  } else {
+    fetch('/token', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({access_token: token, type: type, state: __STATE__})
+    }).then((r) => {
+      document.body.innerHTML = r.ok
+        ? '<h2>Login successful. You can close this tab.</h2>'
+        : '<h2>Login was not accepted. Run porcupine auth login again.</h2>';
+    });
+  }
 </script>
 <p>Completing login...</p>
 </body></html>"""
+
+
+class _CallbackHandler(BaseHTTPRequestHandler):
+    """
+    Minimal HTTP handler to capture the Supabase magic link redirect.
+
+    Supabase appends the token as a URL fragment (#access_token=...) which
+    browsers don't send to the server. We serve a tiny HTML page that reads
+    the fragment via JavaScript and POSTs it back to us.
+
+    The port is reachable by every local process and, through the browser, by
+    any web page that is open while a login is waiting. A token is therefore
+    accepted only from our own page: the POST must carry the per-login `state`
+    that page was served with, be JSON, and not come from another origin.
+    """
+
+    captured: dict = {}
+    # Random value set by login() for each attempt.
+    state: str = ""
+
+    def _refuse(self, status: int) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def do_GET(self):
+        """Serve the fragment-capture page."""
+        if urllib.parse.urlsplit(self.path).path != CALLBACK_PATH:
+            self._refuse(404)
+            return
+        html = _CALLBACK_PAGE.replace("__STATE__", json.dumps(_CallbackHandler.state))
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(html.encode())
 
     def do_POST(self):
         """Receive the POSTed token from the JavaScript fragment reader."""
-        import json as _json
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
+        if urllib.parse.urlsplit(self.path).path != TOKEN_PATH:
+            self._refuse(404)
+            return
+
+        origin = self.headers.get("Origin")
+        content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if (origin is not None and origin not in _OWN_ORIGINS) or content_type != "application/json":
+            self._refuse(403)
+            return
+
         try:
-            data = _json.loads(body)
-            _CallbackHandler.captured.update(data)
+            length = int(self.headers.get("Content-Length", 0))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > _MAX_TOKEN_BODY:
+            self._refuse(400)
+            return
+
+        try:
+            data = json.loads(self.rfile.read(length))
         except Exception:
-            pass
+            data = None
+        if not isinstance(data, dict):
+            self._refuse(400)
+            return
+
+        state = data.get("state")
+        expected = _CallbackHandler.state
+        if (
+            not expected
+            or not isinstance(state, str)
+            or not hmac.compare_digest(state.encode(), expected.encode())
+        ):
+            self._refuse(403)
+            return
+
+        token = data.get("access_token")
+        if not isinstance(token, str) or not token:
+            self._refuse(400)
+            return
+
+        _CallbackHandler.captured = {"access_token": token}
         self.send_response(200)
+        self.send_header("Content-Length", "0")
         self.end_headers()
 
     def log_message(self, *args):
@@ -155,7 +226,8 @@ def login(email: str) -> dict:
     2. Starts a local callback server on port 54321.
     3. Opens the user's browser to the Supabase-generated link.
     4. Waits (up to 120s) for the user to click the link and return.
-    5. Exchanges the captured fragment token for a full session.
+    5. Exchanges the captured fragment token for a full session and checks
+       that it belongs to `email`.
     6. Persists the session to keychain.
 
     Args:
@@ -180,6 +252,7 @@ def login(email: str) -> dict:
 
     # Start callback server in a background thread
     _CallbackHandler.captured = {}
+    _CallbackHandler.state = secrets.token_urlsafe(32)
     server = HTTPServer(("localhost", CALLBACK_PORT), _CallbackHandler)
     server.timeout = 120  # 2 minutes to complete browser flow
 
@@ -201,7 +274,15 @@ def login(email: str) -> dict:
     client.auth.set_session(access_token, "")
     user = client.auth.get_user(access_token)
     user_id = user.user.id
-    user_email = user.user.email or email
+    user_email = user.user.email or ""
+
+    # The token must belong to the account this login was started for. A
+    # token for any other account was not produced by this magic link.
+    if user_email.strip().lower() != email.strip().lower():
+        raise RuntimeError(
+            f"The sign-in that came back was not for {email}. Nothing was saved; "
+            "run porcupine auth login again."
+        )
 
     save_session(access_token, user_id, user_email)
     return {"access_token": access_token, "user_id": user_id, "email": user_email}
